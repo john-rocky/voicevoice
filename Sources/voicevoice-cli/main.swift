@@ -287,22 +287,17 @@ func setup() {
     let hookDir = hookScriptPath.deletingLastPathComponent()
     try? fm.createDirectory(at: hookDir, withIntermediateDirectories: true)
 
-    let binPath = CommandLine.arguments[0]
-    // Resolve to absolute path
-    let absoluteBin: String
-    if binPath.hasPrefix("/") {
-        absoluteBin = binPath
-    } else {
-        absoluteBin = fm.currentDirectoryPath + "/" + binPath
-    }
-
     let hookScript = """
     #!/bin/bash
     # voicevoice - Claude Code auto-speak hook
     # Reads assistant responses aloud via VOICEVOX
 
     FLAG="$HOME/.voicevoice_enabled"
-    VOICEVOICE="\(absoluteBin)"
+    # Find voicevoice binary
+    for p in /usr/local/bin/voicevoice "$HOME/bin/voicevoice"; do
+      [ -x "$p" ] && VOICEVOICE="$p" && break
+    done
+    [ -z "$VOICEVOICE" ] && exit 0
 
     # Check if enabled
     [ ! -f "$FLAG" ] && exit 0
