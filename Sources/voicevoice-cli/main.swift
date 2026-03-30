@@ -1,4 +1,7 @@
 import Foundation
+import Vision
+import CoreGraphics
+import ImageIO
 
 // MARK: - Config
 
@@ -96,6 +99,8 @@ func printUsage() {
       voicevoice watch           Watch clipboard and auto-read (Ctrl+C to stop)
       voicevoice save [-o FILE]  Save speech as WAV file (default: voicevoice_output.wav)
       voicevoice shortcut        Create macOS Quick Action for hotkey reading
+      voicevoice ocr [IMAGE]     OCR image and read text aloud (file or clipboard)
+      voicevoice screen          Capture screen, OCR, and read aloud
 
     Options:
       -s, --speaker ID    Speaker/style ID (default: \(defaultSpeaker))
@@ -118,6 +123,10 @@ func printUsage() {
     Read any app:
       voicevoice watch      # then copy text in Kindle, browser, etc.
       voicevoice shortcut   # create hotkey (select text → press shortcut)
+
+    Accessibility:
+      voicevoice ocr        # OCR clipboard screenshot and read aloud
+      voicevoice screen     # capture screen, OCR, and read aloud
     """
     FileHandle.standardError.write(Data(usage.utf8))
 }
@@ -778,6 +787,130 @@ func setupShortcut() {
     }
 }
 
+// MARK: - OCR
+
+func performOCR(on cgImage: CGImage) throws -> String {
+    let request = VNRecognizeTextRequest()
+    request.recognitionLanguages = ["ja", "en"]
+    request.recognitionLevel = .accurate
+
+    let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+    try handler.perform([request])
+
+    guard let results = request.results, !results.isEmpty else {
+        return ""
+    }
+
+    return results.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+}
+
+func loadCGImage(from path: String) throws -> CGImage {
+    let url = URL(fileURLWithPath: path)
+    guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+        throw NSError(domain: "voicevoice", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Failed to load image: \(path)"])
+    }
+    return image
+}
+
+func captureScreen() throws -> String {
+    let tmpPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vv_screen_\(ProcessInfo.processInfo.processIdentifier).png").path
+
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+    task.arguments = ["-x", "-C", tmpPath]  // -x: no sound, -C: capture cursor
+    task.standardError = FileHandle.nullDevice
+    try task.run()
+    task.waitUntilExit()
+
+    defer { try? FileManager.default.removeItem(atPath: tmpPath) }
+
+    guard task.terminationStatus == 0,
+          FileManager.default.fileExists(atPath: tmpPath) else {
+        throw NSError(domain: "voicevoice", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Screen capture failed"])
+    }
+
+    let image = try loadCGImage(from: tmpPath)
+    return try performOCR(on: image)
+}
+
+func getClipboardImage() -> CGImage? {
+    // Use osascript to check if clipboard has image, save to temp file
+    let tmpPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("vv_clipboard_\(ProcessInfo.processInfo.processIdentifier).png").path
+
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    task.arguments = ["-e", """
+        try
+            set imgData to the clipboard as «class PNGf»
+            set filePath to POSIX file "\(tmpPath)"
+            set fileRef to open for access filePath with write permission
+            write imgData to fileRef
+            close access fileRef
+        on error
+            return "no_image"
+        end try
+    """]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.standardError = FileHandle.nullDevice
+    try? task.run()
+    task.waitUntilExit()
+
+    guard FileManager.default.fileExists(atPath: tmpPath) else { return nil }
+    defer { try? FileManager.default.removeItem(atPath: tmpPath) }
+
+    return try? loadCGImage(from: tmpPath)
+}
+
+func ocrCommand(source: String?, speaker: Int, speed: Float) throws {
+    let text: String
+
+    if let source = source {
+        // OCR from image file
+        let image = try loadCGImage(from: source)
+        text = try performOCR(on: image)
+    } else {
+        // Try clipboard image first, then clipboard text
+        if let clipImage = getClipboardImage() {
+            text = try performOCR(on: clipImage)
+        } else {
+            stderr("No image found. Usage:")
+            stderr("  voicevoice ocr image.png       # OCR from image file")
+            stderr("  voicevoice ocr                  # OCR from clipboard image (screenshot)")
+            exit(1)
+        }
+    }
+
+    guard !text.isEmpty else {
+        stderr("No text found in image")
+        exit(1)
+    }
+
+    print(text)
+    let truncated = text.count > 500 ? String(text.prefix(500)) + "。以下省略。" : text
+    try speak(truncated, speaker: speaker, speed: speed)
+}
+
+func screenCommand(speaker: Int, speed: Float) throws {
+    print("Capturing screen...")
+    let text = try captureScreen()
+
+    guard !text.isEmpty else {
+        stderr("No text found on screen")
+        exit(1)
+    }
+
+    print(text)
+    print("---")
+    let truncated = text.count > 500 ? String(text.prefix(500)) + "。以下省略。" : text
+    try speak(truncated, speaker: speaker, speed: speed)
+}
+
 // MARK: - Clipboard
 
 func getClipboard() -> String {
@@ -1004,6 +1137,23 @@ if let first = args.first {
         exit(0)
     case "shortcut":
         setupShortcut()
+        exit(0)
+    case "ocr":
+        let ocrSource = args.count >= 2 ? args[1] : nil
+        do {
+            try ocrCommand(source: ocrSource, speaker: speakerID, speed: speedScale)
+        } catch {
+            stderr("Error: \(error.localizedDescription)")
+            exit(1)
+        }
+        exit(0)
+    case "screen":
+        do {
+            try screenCommand(speaker: speakerID, speed: speedScale)
+        } catch {
+            stderr("Error: \(error.localizedDescription)")
+            exit(1)
+        }
         exit(0)
     case "help":
         printUsage()

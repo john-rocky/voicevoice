@@ -14,6 +14,7 @@ https://github.com/user-attachments/assets/b940faf8-d4cd-4942-a234-1e16fe57a5f4
 - Claude Code の応答を自動で読み上げ
 - Permission prompt も音声で通知（画面を見ずに承認/拒否）
 - Kindle・ブラウザ・PDF なども読み上げ（`voicevoice watch`）
+- 画像内テキストの OCR → 読み上げ（`voicevoice ocr` / `voicevoice screen`）
 - 音声ファイルとして保存（`voicevoice save`）
 - キーボードショートカットで選択テキストを読み上げ（`voicevoice shortcut`）
 - 50以上のキャラクターボイス（ずんだもん、四国めたん等）
@@ -115,6 +116,23 @@ macOS の Quick Action を作成します。テキストを選択してショー
 2. System Settings → Keyboard → Keyboard Shortcuts → Services
 3. 「voicevoice Read Aloud」にショートカットを割り当て（例: ⌃⌥V）
 
+### 画像のテキストを読み上げ（OCR）
+
+スクリーンリーダーでは読めない画像内のテキストを読み上げます。
+
+```bash
+# 画像ファイルを OCR して読み上げ
+voicevoice ocr screenshot.png
+
+# クリップボードのスクリーンショットを OCR（⌘⇧4 → ⌘V → 読み上げ）
+voicevoice ocr
+
+# 今の画面をキャプチャして OCR → 読み上げ
+voicevoice screen
+```
+
+macOS 標準の Vision フレームワークを使用。日本語・英語に対応。追加インストール不要。
+
 ### 音声ファイルとして保存
 
 ```bash
@@ -154,6 +172,8 @@ voicevoice -s 8 "春日部つむぎの声"
 | `voicevoice read` | クリップボードの内容を読み上げ |
 | `voicevoice save` | 音声ファイルとして保存（WAV） |
 | `voicevoice shortcut` | macOS キーボードショートカットを作成 |
+| `voicevoice ocr [IMAGE]` | 画像の OCR → 読み上げ（ファイル or クリップボード） |
+| `voicevoice screen` | 画面キャプチャ → OCR → 読み上げ |
 | `voicevoice config` | 設定の確認・変更（speed, speaker, host） |
 | `voicevoice status` | 現在の状態を確認 |
 | `voicevoice help` | ヘルプを表示 |
