@@ -86,6 +86,25 @@ voicevoice -s 13 "お疲れ様です"
 voicevoice -l
 ```
 
+### 設定
+
+速度やキャラクターを保存できます。フックからの自動読み上げにも反映されます。
+
+```bash
+# 現在の設定を確認
+voicevoice config
+
+# 読み上げ速度を変更（0.5〜2.0、デフォルト 1.0）
+voicevoice config speed 1.3
+
+# キャラクターを変更
+voicevoice config speaker 13    # 青山龍星（男性）
+
+# 一時的に変更（保存しない）
+voicevoice --speed 1.5 "速いテスト"
+voicevoice -s 8 "春日部つむぎの声"
+```
+
 ### コマンド一覧
 
 | コマンド | 説明 |
@@ -93,12 +112,14 @@ voicevoice -l
 | `voicevoice setup` | Claude Code 連携 + VOICEVOX インストール |
 | `voicevoice on` | 読み上げON（セッション単位 / グローバル） |
 | `voicevoice off` | 読み上げOFF |
+| `voicevoice config` | 設定の確認・変更（speed, speaker, host） |
 | `voicevoice status` | 現在の状態を確認 |
+| `voicevoice help` | ヘルプを表示 |
 | `voicevoice uninstall` | 完全削除（環境を元通りに） |
 
 ## キャラクターボイス
 
-デフォルト: **ずんだもん（ID: 3）**。`-s <ID>` で変更できます。
+デフォルト: **ずんだもん（ID: 3）**。`voicevoice config speaker <ID>` で変更できます。
 
 | ID | キャラクター | スタイル |
 |----|-------------|---------|

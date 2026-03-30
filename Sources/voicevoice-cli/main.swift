@@ -634,6 +634,9 @@ if let first = args.first {
             configShow()
         }
         exit(0)
+    case "help":
+        printUsage()
+        exit(0)
     default:
         break
     }
