@@ -4,6 +4,7 @@ import Foundation
 
 let defaultHost = "http://127.0.0.1:50021"
 let defaultSpeaker = 3  // ずんだもん ノーマル
+let defaultSpeed: Float = 1.0
 let sessionsDir = FileManager.default.temporaryDirectory
     .appendingPathComponent("voicevoice_sessions")
 let globalFlagFile = FileManager.default.homeDirectoryForCurrentUser
@@ -12,6 +13,66 @@ let hookScriptPath = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude/hooks/voicevoice-hook.sh")
 let settingsPath = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude/settings.json")
+let configPath = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".voicevoice.json")
+
+// MARK: - Config File
+
+struct VoiceConfig: Codable {
+    var speaker: Int
+    var speed: Float
+    var host: String
+
+    static let `default` = VoiceConfig(speaker: defaultSpeaker, speed: defaultSpeed, host: defaultHost)
+
+    static func load() -> VoiceConfig {
+        guard let data = try? Data(contentsOf: configPath),
+              let config = try? JSONDecoder().decode(VoiceConfig.self, from: data) else {
+            return .default
+        }
+        return config
+    }
+
+    func save() {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        // Pretty print
+        if let json = try? JSONSerialization.jsonObject(with: data),
+           let pretty = try? JSONSerialization.data(withJSONObject: json, options: .prettyPrinted) {
+            try? pretty.write(to: configPath)
+        } else {
+            try? data.write(to: configPath)
+        }
+    }
+}
+
+func configSet(key: String, value: String) {
+    var config = VoiceConfig.load()
+    switch key {
+    case "speaker":
+        guard let id = Int(value) else { stderr("Error: speaker must be an integer"); exit(1) }
+        config.speaker = id
+    case "speed":
+        guard let spd = Float(value), spd >= 0.5, spd <= 2.0 else {
+            stderr("Error: speed must be 0.5-2.0"); exit(1)
+        }
+        config.speed = spd
+    case "host":
+        config.host = value
+    default:
+        stderr("Unknown config key: \(key). Available: speaker, speed, host")
+        exit(1)
+    }
+    config.save()
+    print("Set \(key) = \(value)")
+}
+
+func configShow() {
+    let c = VoiceConfig.load()
+    print("voicevoice config (\(configPath.path)):")
+    print("  speaker: \(c.speaker)")
+    print("  speed:   \(c.speed)")
+    print("  host:    \(c.host)")
+}
 
 // MARK: - Usage
 
@@ -27,9 +88,12 @@ func printUsage() {
       voicevoice setup           Set up Claude Code integration
       voicevoice uninstall       Remove completely (clean environment)
       voicevoice status          Check current status
+      voicevoice config          Show current config
+      voicevoice config KEY VAL  Set config (speaker, speed, host)
 
     Options:
       -s, --speaker ID    Speaker/style ID (default: \(defaultSpeaker))
+      --speed SPEED       Speech speed 0.5-2.0 (default: \(defaultSpeed))
       -H, --host URL      VOICEVOX engine URL (default: \(defaultHost))
       -l, --list          List available speakers
       -h, --help          Show this help
@@ -431,13 +495,13 @@ func uninstall() {
         print("[OK] Hook script deleted")
     }
 
-    // 3. Remove all flag files
+    // 3. Remove all flag/config files
     try? fm.removeItem(at: globalFlagFile)
     try? fm.removeItem(at: sessionsDir)
-    // Clean up lock file
+    try? fm.removeItem(at: configPath)
     let lockFile = fm.temporaryDirectory.appendingPathComponent("voicevoice.lock")
     try? fm.removeItem(at: lockFile)
-    print("[OK] All flag/temp files cleaned up")
+    print("[OK] All flag/config/temp files cleaned up")
 
     print("")
     print("voicevoice completely removed from Claude Code.")
@@ -494,7 +558,7 @@ func listSpeakers() throws {
     }
 }
 
-func speak(_ text: String, speaker: Int) throws {
+func speak(_ text: String, speaker: Int, speed: Float) throws {
     // Acquire file lock so multiple instances don't overlap
     let lockPath = FileManager.default.temporaryDirectory
         .appendingPathComponent("voicevoice.lock").path
@@ -505,11 +569,17 @@ func speak(_ text: String, speaker: Int) throws {
     flock(lockFD, LOCK_EX)  // Wait for exclusive lock
     defer { flock(lockFD, LOCK_UN) }
 
-    let queryData = try voicevoxRequest(
+    var queryData = try voicevoxRequest(
         path: "/audio_query", method: "POST",
         queryItems: [URLQueryItem(name: "text", value: text),
                      URLQueryItem(name: "speaker", value: String(speaker))]
     )
+
+    // Apply speed setting
+    if speed != 1.0, var query = try? JSONSerialization.jsonObject(with: queryData) as? [String: Any] {
+        query["speedScale"] = speed
+        queryData = try JSONSerialization.data(withJSONObject: query)
+    }
 
     let wavData = try voicevoxRequest(
         path: "/synthesis", method: "POST",
@@ -532,8 +602,10 @@ func speak(_ text: String, speaker: Int) throws {
 // MARK: - Parse Args
 
 var args = Array(CommandLine.arguments.dropFirst())
-var speakerID = defaultSpeaker
-var host = defaultHost
+let savedConfig = VoiceConfig.load()
+var speakerID = savedConfig.speaker
+var speedScale = savedConfig.speed
+var host = savedConfig.host
 var shouldList = false
 var textParts: [String] = []
 
@@ -555,6 +627,13 @@ if let first = args.first {
     case "uninstall":
         uninstall()
         exit(0)
+    case "config":
+        if args.count >= 3 {
+            configSet(key: args[1], value: args[2])
+        } else {
+            configShow()
+        }
+        exit(0)
     default:
         break
     }
@@ -575,6 +654,13 @@ while i < args.count {
             exit(1)
         }
         speakerID = id
+    case "--speed":
+        i += 1
+        guard i < args.count, let spd = Float(args[i]), spd >= 0.5, spd <= 2.0 else {
+            stderr("Error: --speed requires a number between 0.5 and 2.0")
+            exit(1)
+        }
+        speedScale = spd
     case "-H", "--host":
         i += 1
         guard i < args.count else {
@@ -611,7 +697,7 @@ do {
         exit(1)
     }
 
-    try speak(text, speaker: speakerID)
+    try speak(text, speaker: speakerID, speed: speedScale)
 } catch {
     stderr("Error: \(error.localizedDescription)")
     exit(1)
