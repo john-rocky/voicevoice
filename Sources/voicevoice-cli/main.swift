@@ -15,6 +15,8 @@ let settingsPath = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".claude/settings.json")
 let configPath = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".voicevoice.json")
+let notifyHookScriptPath = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".claude/hooks/voicevoice-notify-hook.sh")
 
 // MARK: - Config File
 
@@ -92,6 +94,8 @@ func printUsage() {
       voicevoice config KEY VAL  Set config (speaker, speed, host)
       voicevoice read            Read clipboard text aloud
       voicevoice watch           Watch clipboard and auto-read (Ctrl+C to stop)
+      voicevoice save [-o FILE]  Save speech as WAV file (default: voicevoice_output.wav)
+      voicevoice shortcut        Create macOS Quick Action for hotkey reading
 
     Options:
       -s, --speaker ID    Speaker/style ID (default: \(defaultSpeaker))
@@ -112,7 +116,8 @@ func printUsage() {
       4. Start claude and enjoy!
 
     Read any app:
-      voicevoice watch   # then copy text in Kindle, browser, etc.
+      voicevoice watch      # then copy text in Kindle, browser, etc.
+      voicevoice shortcut   # create hotkey (select text → press shortcut)
     """
     FileHandle.standardError.write(Data(usage.utf8))
 }
@@ -469,6 +474,83 @@ func setup() {
 
     stopHooks.append(hookEntry)
     hooks["Stop"] = stopHooks
+
+    // 3. Create notification hook script (permission prompts)
+    let notifyScript = """
+    #!/bin/bash
+    # voicevoice - Claude Code permission prompt notification
+
+    # Find voicevoice binary
+    for p in /opt/homebrew/bin/voicevoice /usr/local/bin/voicevoice "$HOME/bin/voicevoice"; do
+      [ -x "$p" ] && VOICEVOICE="$p" && break
+    done
+    [ -z "$VOICEVOICE" ] && exit 0
+
+    # Check if enabled (global flag or per-session flag)
+    ENABLED=0
+    [ -f "$HOME/.voicevoice_enabled" ] && ENABLED=1
+    if [ "$ENABLED" -eq 0 ]; then
+      SESSION_DIR="${TMPDIR:-/tmp}voicevoice_sessions"
+      if [ -d "$SESSION_DIR" ]; then
+        PID=$$
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          PID=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+          [ -z "$PID" ] || [ "$PID" -le 1 ] 2>/dev/null && break
+          [ -f "$SESSION_DIR/$PID" ] && ENABLED=1 && break
+        done
+      fi
+    fi
+    [ "$ENABLED" -eq 0 ] && exit 0
+
+    # Find jq and try to extract tool name
+    JQ=$(command -v jq 2>/dev/null || echo "")
+    if [ -n "$JQ" ]; then
+      INPUT=$(cat)
+      TOOL=$(echo "$INPUT" | "$JQ" -r '.tool_name // .tool // empty' 2>/dev/null)
+      if [ -n "$TOOL" ]; then
+        "$VOICEVOICE" "${TOOL}の許可が必要です" &
+        exit 0
+      fi
+    fi
+
+    "$VOICEVOICE" "許可が必要です" &
+    exit 0
+    """
+
+    do {
+        try notifyScript.write(to: notifyHookScriptPath, atomically: true, encoding: .utf8)
+        let nAttrs = try fm.attributesOfItem(atPath: notifyHookScriptPath.path)
+        let nPerms = (nAttrs[.posixPermissions] as? Int) ?? 0o644
+        try fm.setAttributes([.posixPermissions: nPerms | 0o111], ofItemAtPath: notifyHookScriptPath.path)
+        print("[OK] Notification hook created: \(notifyHookScriptPath.path)")
+    } catch {
+        stderr("[WARNING] Failed to create notification hook: \(error.localizedDescription)")
+    }
+
+    // Register notification hook
+    let notifyEntry: [String: Any] = [
+        "matcher": "permission_prompt",
+        "hooks": [
+            [
+                "type": "command",
+                "command": notifyHookScriptPath.path,
+                "timeout": 10000
+            ] as [String: Any]
+        ]
+    ]
+
+    var notifyHooks = hooks["Notification"] as? [[String: Any]] ?? []
+    notifyHooks.removeAll { entry in
+        if let entryHooks = entry["hooks"] as? [[String: Any]] {
+            return entryHooks.contains { h in
+                (h["command"] as? String)?.contains("voicevoice") == true
+            }
+        }
+        return false
+    }
+    notifyHooks.append(notifyEntry)
+    hooks["Notification"] = notifyHooks
+
     settings["hooks"] = hooks
 
     do {
@@ -487,6 +569,10 @@ func setup() {
     print("  voicevoice off    Disable auto-speak")
     print("  Then start claude as usual.")
     print("")
+    print("Features enabled:")
+    print("  - Auto-read responses (Stop hook)")
+    print("  - Read permission prompts aloud (Notification hook)")
+    print("")
     print("During a conversation, toggle with:")
     print("  ! voicevoice on")
     print("  ! voicevoice off")
@@ -497,25 +583,28 @@ func setup() {
 func uninstall() {
     let fm = FileManager.default
 
-    // 1. Remove hook from settings.json
+    // 1. Remove hooks from settings.json (Stop + Notification)
     if fm.fileExists(atPath: settingsPath.path),
        let data = try? Data(contentsOf: settingsPath),
        var settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
 
-        if var hooks = settings["hooks"] as? [String: Any],
-           var stopHooks = hooks["Stop"] as? [[String: Any]] {
-            stopHooks.removeAll { entry in
-                if let entryHooks = entry["hooks"] as? [[String: Any]] {
-                    return entryHooks.contains { h in
-                        (h["command"] as? String)?.contains("voicevoice") == true
+        if var hooks = settings["hooks"] as? [String: Any] {
+            for eventType in ["Stop", "Notification"] {
+                if var eventHooks = hooks[eventType] as? [[String: Any]] {
+                    eventHooks.removeAll { entry in
+                        if let entryHooks = entry["hooks"] as? [[String: Any]] {
+                            return entryHooks.contains { h in
+                                (h["command"] as? String)?.contains("voicevoice") == true
+                            }
+                        }
+                        return false
+                    }
+                    if eventHooks.isEmpty {
+                        hooks.removeValue(forKey: eventType)
+                    } else {
+                        hooks[eventType] = eventHooks
                     }
                 }
-                return false
-            }
-            if stopHooks.isEmpty {
-                hooks.removeValue(forKey: "Stop")
-            } else {
-                hooks["Stop"] = stopHooks
             }
             if hooks.isEmpty {
                 settings.removeValue(forKey: "hooks")
@@ -527,16 +616,26 @@ func uninstall() {
         if let newData = try? JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]) {
             try? newData.write(to: settingsPath)
         }
-        print("[OK] Claude Code hook removed from settings")
+        print("[OK] Claude Code hooks removed from settings")
     }
 
-    // 2. Remove hook script
-    if fm.fileExists(atPath: hookScriptPath.path) {
-        try? fm.removeItem(at: hookScriptPath)
-        print("[OK] Hook script deleted")
+    // 2. Remove hook scripts
+    for path in [hookScriptPath, notifyHookScriptPath] {
+        if fm.fileExists(atPath: path.path) {
+            try? fm.removeItem(at: path)
+        }
+    }
+    print("[OK] Hook scripts deleted")
+
+    // 3. Remove Quick Action
+    let workflowPath = fm.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Services/voicevoice Read Aloud.workflow")
+    if fm.fileExists(atPath: workflowPath.path) {
+        try? fm.removeItem(at: workflowPath)
+        print("[OK] Quick Action deleted")
     }
 
-    // 3. Remove all flag/config files
+    // 4. Remove all flag/config files
     try? fm.removeItem(at: globalFlagFile)
     try? fm.removeItem(at: sessionsDir)
     try? fm.removeItem(at: configPath)
@@ -547,6 +646,136 @@ func uninstall() {
     print("")
     print("voicevoice completely removed from Claude Code.")
     print("Your environment is exactly as it was before setup.")
+}
+
+// MARK: - Save to File
+
+func synthesize(_ text: String, speaker: Int, speed: Float) throws -> Data {
+    var queryData = try voicevoxRequest(
+        path: "/audio_query", method: "POST",
+        queryItems: [URLQueryItem(name: "text", value: text),
+                     URLQueryItem(name: "speaker", value: String(speaker))]
+    )
+
+    if speed != 1.0, var query = try? JSONSerialization.jsonObject(with: queryData) as? [String: Any] {
+        query["speedScale"] = speed
+        queryData = try JSONSerialization.data(withJSONObject: query)
+    }
+
+    return try voicevoxRequest(
+        path: "/synthesis", method: "POST",
+        queryItems: [URLQueryItem(name: "speaker", value: String(speaker))],
+        body: queryData
+    )
+}
+
+func saveToFile(_ text: String, speaker: Int, speed: Float, outputPath: String) throws {
+    let wavData = try synthesize(text, speaker: speaker, speed: speed)
+    let url = URL(fileURLWithPath: outputPath)
+    try wavData.write(to: url)
+    let sizeKB = wavData.count / 1024
+    print("Saved: \(outputPath) (\(sizeKB) KB)")
+}
+
+// MARK: - Shortcut (Quick Action)
+
+func setupShortcut() {
+    let fm = FileManager.default
+    let servicesDir = fm.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Services")
+    let workflowPath = servicesDir.appendingPathComponent("voicevoice Read Aloud.workflow")
+    let contentsDir = workflowPath.appendingPathComponent("Contents")
+
+    // Remove existing
+    try? fm.removeItem(at: workflowPath)
+    try? fm.createDirectory(at: contentsDir, withIntermediateDirectories: true)
+
+    let shellScript = """
+    for p in /opt/homebrew/bin/voicevoice /usr/local/bin/voicevoice "$HOME/bin/voicevoice"; do
+      [ -x "$p" ] && VV="$p" && break
+    done
+    [ -z "$VV" ] && exit 0
+    TEXT=$(cat)
+    [ -z "$TEXT" ] && exit 0
+    if [ ${#TEXT} -gt 500 ]; then
+      TEXT="${TEXT:0:500}。以下省略。"
+    fi
+    "$VV" "$TEXT" &
+    exit 0
+    """
+
+    let actionUUID = UUID().uuidString
+    let inputUUID = UUID().uuidString
+    let outputUUID = UUID().uuidString
+
+    let action: [String: Any] = [
+        "action": [
+            "AMAccepts": ["Container": "List", "Optional": true, "Types": ["com.apple.cocoa.string"]],
+            "AMActionVersion": "2.0.3",
+            "AMApplication": ["Automator"],
+            "AMCategory": "AMCategoryUtilities",
+            "AMProvides": ["Container": "List", "Types": ["com.apple.cocoa.string"]],
+            "ActionBundlePath": "/System/Library/Automator/Run Shell Script.action",
+            "ActionName": "Run Shell Script",
+            "ActionParameters": [
+                "COMMAND_STRING": shellScript,
+                "CheckedForUserDefaultShell": true,
+                "inputMethod": 0,
+                "shell": "/bin/bash",
+                "source": ""
+            ] as [String: Any],
+            "BundleIdentifier": "com.apple.RunShellScript",
+            "CFBundleVersion": "2.0.3",
+            "CanShowSelectedItemsWhenRun": false,
+            "CanShowWhenRun": true,
+            "Category": ["AMCategoryUtilities"],
+            "Class Name": "RunShellScriptAction",
+            "InputUUID": inputUUID,
+            "Keywords": ["Shell", "Script"],
+            "OutputUUID": outputUUID,
+            "UUID": actionUUID,
+            "UnlocalizedApplications": ["Automator"],
+            "arguments": [
+                "0": [
+                    "default value": 0,
+                    "name": "inputMethod",
+                    "required": "0",
+                    "type": "0",
+                    "uuid": "0"
+                ] as [String: Any]
+            ] as [String: Any]
+        ] as [String: Any]
+    ]
+
+    let wflow: [String: Any] = [
+        "AMApplicationBuild": "523",
+        "AMApplicationVersion": "2.10",
+        "AMDocumentVersion": "2",
+        "actions": [action],
+        "connectors": [String: Any](),
+        "workflowMetaData": [
+            "serviceInputTypeIdentifier": "com.apple.Automator.text",
+            "serviceOutputTypeIdentifier": "com.apple.Automator.nothing",
+            "serviceProcessesInput": 0,
+            "workflowTypeIdentifier": "com.apple.Automator.servicesMenu"
+        ] as [String: Any]
+    ]
+
+    do {
+        let data = try PropertyListSerialization.data(fromPropertyList: wflow, format: .xml, options: 0)
+        try data.write(to: contentsDir.appendingPathComponent("document.wflow"))
+        print("[OK] Quick Action created: voicevoice Read Aloud")
+        print("")
+        print("To assign a keyboard shortcut:")
+        print("  1. System Settings → Keyboard → Keyboard Shortcuts → Services")
+        print("  2. Find 'voicevoice Read Aloud' under Text")
+        print("  3. Set your preferred shortcut (e.g. ⌃⌥V)")
+        print("")
+        print("Usage: Select text in any app → press your shortcut")
+    } catch {
+        stderr("[ERROR] Failed to create Quick Action: \(error.localizedDescription)")
+        exit(1)
+    }
 }
 
 // MARK: - Clipboard
@@ -665,23 +894,7 @@ func speak(_ text: String, speaker: Int, speed: Float) throws {
     flock(lockFD, LOCK_EX)  // Wait for exclusive lock
     defer { flock(lockFD, LOCK_UN) }
 
-    var queryData = try voicevoxRequest(
-        path: "/audio_query", method: "POST",
-        queryItems: [URLQueryItem(name: "text", value: text),
-                     URLQueryItem(name: "speaker", value: String(speaker))]
-    )
-
-    // Apply speed setting
-    if speed != 1.0, var query = try? JSONSerialization.jsonObject(with: queryData) as? [String: Any] {
-        query["speedScale"] = speed
-        queryData = try JSONSerialization.data(withJSONObject: query)
-    }
-
-    let wavData = try voicevoxRequest(
-        path: "/synthesis", method: "POST",
-        queryItems: [URLQueryItem(name: "speaker", value: String(speaker))],
-        body: queryData
-    )
+    let wavData = try synthesize(text, speaker: speaker, speed: speed)
 
     let tmpFile = FileManager.default.temporaryDirectory
         .appendingPathComponent("vv_\(ProcessInfo.processInfo.processIdentifier).wav")
@@ -745,6 +958,52 @@ if let first = args.first {
             stderr("Error: \(error.localizedDescription)")
             exit(1)
         }
+        exit(0)
+    case "save":
+        let saveArgs = Array(args.dropFirst())
+        var outputFile = "voicevoice_output.wav"
+        var saveTextParts: [String] = []
+        var si = 0
+        while si < saveArgs.count {
+            switch saveArgs[si] {
+            case "-o", "--output":
+                si += 1
+                if si < saveArgs.count { outputFile = saveArgs[si] }
+            case "-s", "--speaker":
+                si += 1
+                if si < saveArgs.count, let id = Int(saveArgs[si]) { speakerID = id }
+            case "--speed":
+                si += 1
+                if si < saveArgs.count, let spd = Float(saveArgs[si]) { speedScale = spd }
+            case "-H", "--host":
+                si += 1
+                if si < saveArgs.count { host = saveArgs[si] }
+            default:
+                saveTextParts.append(saveArgs[si])
+            }
+            si += 1
+        }
+        var saveText = saveTextParts.joined(separator: " ")
+        if saveText.isEmpty && isatty(STDIN_FILENO) == 0 {
+            if let data = FileHandle.standardInput.readDataToEndOfFile() as Data?,
+               let str = String(data: data, encoding: .utf8) {
+                saveText = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        guard !saveText.isEmpty else {
+            stderr("Error: no text provided")
+            stderr("Usage: voicevoice save [-o output.wav] \"text\"")
+            exit(1)
+        }
+        do {
+            try saveToFile(saveText, speaker: speakerID, speed: speedScale, outputPath: outputFile)
+        } catch {
+            stderr("Error: \(error.localizedDescription)")
+            exit(1)
+        }
+        exit(0)
+    case "shortcut":
+        setupShortcut()
         exit(0)
     case "help":
         printUsage()

@@ -12,7 +12,11 @@ https://github.com/user-attachments/assets/b940faf8-d4cd-4942-a234-1e16fe57a5f4
 ## 特徴
 
 - Claude Code の応答を自動で読み上げ
-- 30以上のキャラクターボイス（ずんだもん、四国めたん等）
+- Permission prompt も音声で通知（画面を見ずに承認/拒否）
+- Kindle・ブラウザ・PDF なども読み上げ（`voicevoice watch`）
+- 音声ファイルとして保存（`voicevoice save`）
+- キーボードショートカットで選択テキストを読み上げ（`voicevoice shortcut`）
+- 50以上のキャラクターボイス（ずんだもん、四国めたん等）
 - ターミナルセッションごとにON/OFF切り替え可能
 - クラウドAPI不要、完全無料、ローカル完結
 - OFFの時は Claude Code に影響ゼロ
@@ -98,6 +102,28 @@ voicevoice read
 
 `voicevoice watch` をターミナルで起動しておけば、Kindle・ブラウザ・PDF など **どのアプリでもテキストを選択してコピー（⌘C）するだけ** で読み上げてくれます。Ctrl+C で停止。
 
+### キーボードショートカットで読み上げ
+
+```bash
+voicevoice shortcut
+```
+
+macOS の Quick Action を作成します。テキストを選択してショートカットキーを押すだけで読み上げ。
+
+設定手順:
+1. `voicevoice shortcut` を実行
+2. System Settings → Keyboard → Keyboard Shortcuts → Services
+3. 「voicevoice Read Aloud」にショートカットを割り当て（例: ⌃⌥V）
+
+### 音声ファイルとして保存
+
+```bash
+voicevoice save "ナレーションテキスト"                    # voicevoice_output.wav に保存
+voicevoice save -o narration.wav "ナレーションテキスト"   # 指定ファイルに保存
+voicevoice save -o output.wav -s 13 "男性の声で"          # スピーカー指定
+echo "パイプも可" | voicevoice save -o output.wav         # パイプ入力
+```
+
 ### 設定
 
 速度やキャラクターを保存できます。フックからの自動読み上げにも反映されます。
@@ -126,6 +152,8 @@ voicevoice -s 8 "春日部つむぎの声"
 | `voicevoice off` | 読み上げOFF |
 | `voicevoice watch` | クリップボード監視モード（Kindle・ブラウザ等に） |
 | `voicevoice read` | クリップボードの内容を読み上げ |
+| `voicevoice save` | 音声ファイルとして保存（WAV） |
+| `voicevoice shortcut` | macOS キーボードショートカットを作成 |
 | `voicevoice config` | 設定の確認・変更（speed, speaker, host） |
 | `voicevoice status` | 現在の状態を確認 |
 | `voicevoice help` | ヘルプを表示 |
@@ -175,8 +203,9 @@ voicevoice uninstall
 
 以下が削除されます:
 - `settings.json` からのフック登録（他の設定はそのまま）
-- フックスクリプト（`~/.claude/hooks/voicevoice-hook.sh`）
-- すべてのフラグ・一時ファイル
+- フックスクリプト（Stop + Notification）
+- Quick Action（キーボードショートカット）
+- すべてのフラグ・設定・一時ファイル
 
 **セットアップ前と完全に同じ環境に戻ります。**
 
