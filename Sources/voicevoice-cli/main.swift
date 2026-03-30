@@ -174,9 +174,16 @@ func turnOn() {
 func turnOff() {
     let fm = FileManager.default
     if let claudePID = findClaudePID() {
+        // Remove per-session flag
         let flag = sessionsDir.appendingPathComponent(claudePID)
         try? fm.removeItem(at: flag)
-        print("voicevoice: OFF (this session)")
+        // Also remove global flag so the hook actually stops
+        if fm.fileExists(atPath: globalFlagFile.path) {
+            try? fm.removeItem(at: globalFlagFile)
+            print("voicevoice: OFF (this session + global)")
+        } else {
+            print("voicevoice: OFF (this session)")
+        }
     } else {
         // Global off: remove global flag + all session flags
         try? fm.removeItem(at: globalFlagFile)
@@ -186,7 +193,13 @@ func turnOff() {
 }
 
 func isEnabled() -> Bool {
-    FileManager.default.fileExists(atPath: globalFlagFile.path)
+    let fm = FileManager.default
+    if fm.fileExists(atPath: globalFlagFile.path) { return true }
+    // Check per-session flags
+    if let sessions = try? fm.contentsOfDirectory(atPath: sessionsDir.path), !sessions.isEmpty {
+        return true
+    }
+    return false
 }
 
 func showStatus() {
@@ -356,18 +369,41 @@ func setup() {
     # voicevoice - Claude Code auto-speak hook
     # Reads assistant responses aloud via VOICEVOX
 
-    FLAG="$HOME/.voicevoice_enabled"
     # Find voicevoice binary
-    for p in /usr/local/bin/voicevoice "$HOME/bin/voicevoice"; do
+    for p in /opt/homebrew/bin/voicevoice /usr/local/bin/voicevoice "$HOME/bin/voicevoice"; do
       [ -x "$p" ] && VOICEVOICE="$p" && break
     done
     [ -z "$VOICEVOICE" ] && exit 0
 
-    # Check if enabled
-    [ ! -f "$FLAG" ] && exit 0
+    # Check if enabled (global flag or per-session flag)
+    ENABLED=0
+    [ -f "$HOME/.voicevoice_enabled" ] && ENABLED=1
+    if [ "$ENABLED" -eq 0 ]; then
+      SESSION_DIR="${TMPDIR:-/tmp}voicevoice_sessions"
+      if [ -d "$SESSION_DIR" ]; then
+        PID=$$
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+          PID=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+          [ -z "$PID" ] || [ "$PID" -le 1 ] 2>/dev/null && break
+          [ -f "$SESSION_DIR/$PID" ] && ENABLED=1 && break
+        done
+      fi
+    fi
+    [ "$ENABLED" -eq 0 ] && exit 0
 
-    # Extract assistant's last message
-    TEXT=$(/opt/homebrew/bin/jq -r '.messages[-1].content // empty' 2>/dev/null)
+    # Find jq
+    JQ=$(command -v jq 2>/dev/null || echo "")
+    [ -z "$JQ" ] && exit 0
+
+    # Extract assistant's last message (handle both string and array content)
+    TEXT=$("$JQ" -r '
+      .messages[-1].content |
+      if type == "array" then
+        [.[] | select(.type == "text") | .text] | join("\\n")
+      else
+        . // empty
+      end
+    ' 2>/dev/null)
 
     # Skip empty
     [ -z "$TEXT" ] && exit 0
@@ -385,7 +421,7 @@ func setup() {
     do {
         try hookScript.write(to: hookScriptPath, atomically: true, encoding: .utf8)
         // Make executable
-        var attrs = try fm.attributesOfItem(atPath: hookScriptPath.path)
+        let attrs = try fm.attributesOfItem(atPath: hookScriptPath.path)
         let perms = (attrs[.posixPermissions] as? Int) ?? 0o644
         try fm.setAttributes([.posixPermissions: perms | 0o111], ofItemAtPath: hookScriptPath.path)
         print("[OK] Hook script created: \(hookScriptPath.path)")
@@ -689,7 +725,7 @@ do {
 
     // Read from pipe if no text argument
     if text.isEmpty && isatty(STDIN_FILENO) == 0 {
-        if let stdinData = try? FileHandle.standardInput.readDataToEndOfFile(),
+        if let stdinData = FileHandle.standardInput.readDataToEndOfFile() as Data?,
            let stdinText = String(data: stdinData, encoding: .utf8) {
             text = stdinText.trimmingCharacters(in: .whitespacesAndNewlines)
         }
