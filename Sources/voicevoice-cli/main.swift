@@ -90,6 +90,8 @@ func printUsage() {
       voicevoice status          Check current status
       voicevoice config          Show current config
       voicevoice config KEY VAL  Set config (speaker, speed, host)
+      voicevoice read            Read clipboard text aloud
+      voicevoice watch           Watch clipboard and auto-read (Ctrl+C to stop)
 
     Options:
       -s, --speaker ID    Speaker/style ID (default: \(defaultSpeaker))
@@ -108,6 +110,9 @@ func printUsage() {
       2. voicevoice setup
       3. voicevoice on
       4. Start claude and enjoy!
+
+    Read any app:
+      voicevoice watch   # then copy text in Kindle, browser, etc.
     """
     FileHandle.standardError.write(Data(usage.utf8))
 }
@@ -544,6 +549,61 @@ func uninstall() {
     print("Your environment is exactly as it was before setup.")
 }
 
+// MARK: - Clipboard
+
+func getClipboard() -> String {
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/pbpaste")
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.standardError = FileHandle.nullDevice
+    try? task.run()
+    task.waitUntilExit()
+    return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+        .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
+func readClipboard(speaker: Int, speed: Float) throws {
+    let text = getClipboard()
+    guard !text.isEmpty else {
+        stderr("Clipboard is empty")
+        exit(1)
+    }
+    let truncated = text.count > 500 ? String(text.prefix(500)) + "。以下省略。" : text
+    try speak(truncated, speaker: speaker, speed: speed)
+}
+
+func watchClipboard(speaker: Int, speed: Float) throws {
+    setlinebuf(stdout)
+    var lastContent = getClipboard()
+
+    print("Watching clipboard... (Ctrl+C to stop)")
+    print("Copy text in any app to read it aloud.")
+
+    signal(SIGINT) { _ in
+        print("\nStopped.")
+        exit(0)
+    }
+
+    while true {
+        Thread.sleep(forTimeInterval: 0.5)
+
+        let current = getClipboard()
+        if current.isEmpty || current == lastContent { continue }
+        lastContent = current
+
+        let preview = current.count > 50 ? String(current.prefix(50)) + "..." : current
+        print("Reading: \(preview)")
+
+        let truncated = current.count > 500 ? String(current.prefix(500)) + "。以下省略。" : current
+        do {
+            try speak(truncated, speaker: speaker, speed: speed)
+        } catch {
+            stderr("Error: \(error.localizedDescription)")
+        }
+    }
+}
+
 // MARK: - VOICEVOX API
 
 func voicevoxRequest(path: String, method: String, queryItems: [URLQueryItem] = [], body: Data? = nil) throws -> Data {
@@ -668,6 +728,22 @@ if let first = args.first {
             configSet(key: args[1], value: args[2])
         } else {
             configShow()
+        }
+        exit(0)
+    case "read":
+        do {
+            try readClipboard(speaker: speakerID, speed: speedScale)
+        } catch {
+            stderr("Error: \(error.localizedDescription)")
+            exit(1)
+        }
+        exit(0)
+    case "watch":
+        do {
+            try watchClipboard(speaker: speakerID, speed: speedScale)
+        } catch {
+            stderr("Error: \(error.localizedDescription)")
+            exit(1)
         }
         exit(0)
     case "help":

@@ -86,6 +86,18 @@ voicevoice -s 13 "お疲れ様です"
 voicevoice -l
 ```
 
+### Kindle・ブラウザなど、どのアプリでも読み上げ
+
+```bash
+# クリップボード監視モード — テキストをコピーするたびに自動で読み上げ
+voicevoice watch
+
+# クリップボードの内容を一回だけ読み上げ
+voicevoice read
+```
+
+`voicevoice watch` をターミナルで起動しておけば、Kindle・ブラウザ・PDF など **どのアプリでもテキストを選択してコピー（⌘C）するだけ** で読み上げてくれます。Ctrl+C で停止。
+
 ### 設定
 
 速度やキャラクターを保存できます。フックからの自動読み上げにも反映されます。
@@ -112,6 +124,8 @@ voicevoice -s 8 "春日部つむぎの声"
 | `voicevoice setup` | Claude Code 連携 + VOICEVOX インストール |
 | `voicevoice on` | 読み上げON（セッション単位 / グローバル） |
 | `voicevoice off` | 読み上げOFF |
+| `voicevoice watch` | クリップボード監視モード（Kindle・ブラウザ等に） |
+| `voicevoice read` | クリップボードの内容を読み上げ |
 | `voicevoice config` | 設定の確認・変更（speed, speaker, host） |
 | `voicevoice status` | 現在の状態を確認 |
 | `voicevoice help` | ヘルプを表示 |
